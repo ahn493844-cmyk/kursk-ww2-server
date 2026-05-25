@@ -11,6 +11,7 @@ const path    = require('path');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';  // Railway는 반드시 0.0.0.0 바인딩 필요
 const DATA_FILE = path.join(__dirname, 'kursk_data.json');
 
 // ── 미들웨어 ──────────────────────────────────────────────
@@ -266,7 +267,7 @@ function recalcFromHistory(history) {
 }
 
 // ── 서버 시작 ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`✅ KURSK 서버 실행 중: http://localhost:${PORT}`);
-  console.log(`   실시간 SSE 엔드포인트: http://localhost:${PORT}/events`);
+app.listen(PORT, HOST, () => {
+  console.log(`✅ KURSK 서버 실행 중: http://${HOST}:${PORT}`);
+  console.log(`   실시간 SSE 엔드포인트: http://${HOST}:${PORT}/events`);
 });
