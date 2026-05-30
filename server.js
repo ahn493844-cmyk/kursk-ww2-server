@@ -161,6 +161,21 @@ app.post('/migrate', (req, res) => {
   res.json({ ok:true, players: Object.keys(data.players).length });
 });
 
+app.post('/reset', (req, res) => {
+  const empty = emptyData();
+  writeData(empty);
+  broadcast({ type:'update', data: empty });
+  res.json({ ok:true });
+});
+
+app.post('/reset', (req, res) => {
+  const empty = { players: {}, history: [], totalGames: 0, lastUpdated: Date.now() };
+  writeData(empty);
+  _memCache = null;
+  broadcast({ type: 'update', data: empty });
+  res.json({ ok: true });
+});
+
 app.post('/game', (req, res) => {
   const { soviet, german, result } = req.body;
   if (!soviet||!german||!result) return res.status(400).json({ error:'필드 누락' });
