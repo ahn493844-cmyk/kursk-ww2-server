@@ -10,7 +10,8 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
 const DATA_FILE = path.join(__dirname, 'kursk_data.json');
-const K = 32;
+const K_OVERALL = 16;  // 전체 레이팅 K값 (느리게 변동)
+const K_FACTION = 32;  // 소련/독일 진영 레이팅 K값
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
@@ -77,20 +78,20 @@ function applyGame(data, soviet, german, result) {
     { p: getPlayer(data, german.east),   pos: 'ge', side: 'ger' },
   ];
 
-  // 전체 레이팅 기준 Elo
+  // 전체 레이팅 기준 Elo (K=16)
   const avgA = sovPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
   const avgB = gerPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
   const expA = exp(avgA, avgB);
   const sA   = result==='soviet'?1:result==='german'?0:0.5;
-  const dA   = Math.round(K*(sA-expA));
-  const dB   = Math.round(K*((1-sA)-(1-expA)));
+  const dA   = Math.round(K_OVERALL*(sA-expA));
+  const dB   = Math.round(K_OVERALL*((1-sA)-(1-expA)));
 
-  // 소련 진영 레이팅 기준 Elo
+  // 소련/독일 진영 레이팅 기준 Elo (K=32)
   const sovAvgA = sovPlayers.reduce((s,x)=>s+x.p.sovRating,0)/3;
   const gerAvgB = gerPlayers.reduce((s,x)=>s+x.p.gerRating,0)/3;
   const sovExpA = exp(sovAvgA, gerAvgB);
-  const sovDA   = Math.round(K*(sA-sovExpA));
-  const gerDB   = Math.round(K*((1-sA)-(1-sovExpA)));
+  const sovDA   = Math.round(K_FACTION*(sA-sovExpA));
+  const gerDB   = Math.round(K_FACTION*((1-sA)-(1-sovExpA)));
 
   sovPlayers.forEach(({p, pos}) => {
     // 전체
