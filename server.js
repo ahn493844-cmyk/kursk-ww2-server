@@ -174,11 +174,11 @@ app.post('/game', (req, res) => {
 
   data.totalGames = (data.totalGames||0)+1;
   data.lastUpdated = Date.now();
-  data.history = [{ soviet, german, result, dA, dB, time:Date.now() }, ...(data.history||[])].slice(0,200);
+  data.history = [{ soviet, german, result, dA, dB, time:Date.now(), memo: req.body.memo||null }, ...(data.history||[])].slice(0,200);
 
   writeData(data);
   broadcast({ type:'update', data });
-  res.json({ ok:true, dA, dB });
+  res.json({ ok:true, dA, dB, memoReceived: req.body.memo||null });
 });
 
 app.delete('/history/:idx', (req, res) => {
