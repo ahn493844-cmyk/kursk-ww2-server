@@ -178,7 +178,7 @@ app.post('/game', (req, res) => {
 
   writeData(data);
   broadcast({ type:'update', data });
-  res.json({ ok:true, dA, dB, memoReceived: req.body.memo||null });
+  res.json({ ok:true, dA, dB });
 });
 
 app.delete('/history/:idx', (req, res) => {
