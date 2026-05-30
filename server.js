@@ -65,17 +65,36 @@ function broadcast(data) {
   clients.forEach(res => { try { res.write(payload); } catch { clients.delete(res); } });
 }
 
+// ── 티어별 패배 차감 감소 (전체 레이팅 전용) ─────────────────
+// 브론즈:-8 / 실버:-7 / 골드:-7 / 다이아:-6 / 마스터:-6 / 그랜드마스터:-5
+function getTierPenaltyReduction(rating, rank) {
+  if (rating >= 2000 && rank <= 3) return 3;  // 그랜드마스터: -5
+  if (rating >= 1800 && rank <= 5) return 2;  // 마스터: -6
+  if (rating >= 1600)              return 2;  // 다이아몬드: -6
+  if (rating >= 1400)              return 1;  // 골드: -7
+  if (rating >= 1200)              return 1;  // 실버: -7
+  return 0;                                   // 브론즈: -8
+}
+
+// 전체 순위 계산 (패널티 감소에 사용)
+function getRank(data, playerKey) {
+  const sorted = Object.entries(data.players)
+    .sort(([,a],[,b]) => b.rating - a.rating);
+  const idx = sorted.findIndex(([k]) => k === playerKey);
+  return idx === -1 ? 999 : idx + 1;
+}
+
 // ── 게임 계산 로직 ────────────────────────────────────────────
 function applyGame(data, soviet, german, result) {
   const sovPlayers = [
-    { p: getPlayer(data, soviet.west),   pos: 'sw', side: 'sov' },
-    { p: getPlayer(data, soviet.center), pos: 'sc', side: 'sov' },
-    { p: getPlayer(data, soviet.east),   pos: 'se', side: 'sov' },
+    { p: getPlayer(data, soviet.west),   pos: 'sw', key: soviet.west.trim().toLowerCase() },
+    { p: getPlayer(data, soviet.center), pos: 'sc', key: soviet.center.trim().toLowerCase() },
+    { p: getPlayer(data, soviet.east),   pos: 'se', key: soviet.east.trim().toLowerCase() },
   ];
   const gerPlayers = [
-    { p: getPlayer(data, german.west),   pos: 'gw', side: 'ger' },
-    { p: getPlayer(data, german.center), pos: 'gc', side: 'ger' },
-    { p: getPlayer(data, german.east),   pos: 'ge', side: 'ger' },
+    { p: getPlayer(data, german.west),   pos: 'gw', key: german.west.trim().toLowerCase() },
+    { p: getPlayer(data, german.center), pos: 'gc', key: german.center.trim().toLowerCase() },
+    { p: getPlayer(data, german.east),   pos: 'ge', key: german.east.trim().toLowerCase() },
   ];
 
   // 전체 레이팅 기준 Elo (K=16)
@@ -83,39 +102,44 @@ function applyGame(data, soviet, german, result) {
   const avgB = gerPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
   const expA = exp(avgA, avgB);
   const sA   = result==='soviet'?1:result==='german'?0:0.5;
-  const dA   = Math.round(K_OVERALL*(sA-expA));
-  const dB   = Math.round(K_OVERALL*((1-sA)-(1-expA)));
+  const rawDA = Math.round(K_OVERALL*(sA-expA));
+  const rawDB = Math.round(K_OVERALL*((1-sA)-(1-expA)));
 
-  // 소련/독일 진영 레이팅 기준 Elo (K=32)
+  // 소련/독일 진영 레이팅 기준 Elo (K=32, 패널티 감소 없음)
   const sovAvgA = sovPlayers.reduce((s,x)=>s+x.p.sovRating,0)/3;
   const gerAvgB = gerPlayers.reduce((s,x)=>s+x.p.gerRating,0)/3;
   const sovExpA = exp(sovAvgA, gerAvgB);
   const sovDA   = Math.round(K_FACTION*(sA-sovExpA));
   const gerDB   = Math.round(K_FACTION*((1-sA)-(1-sovExpA)));
 
-  sovPlayers.forEach(({p, pos}) => {
-    // 전체
+  // 소련팀: 전체 레이팅 변동에 티어 패널티 감소 적용
+  sovPlayers.forEach(({p, pos, key}) => {
+    // 전체 레이팅 — 패배 시만 감소량 줄임
+    const rank = getRank(data, key);
+    const reduction = getTierPenaltyReduction(p.rating, rank);
+    const dA = rawDA < 0 ? Math.min(0, rawDA + reduction) : rawDA;
     p.rating = Math.max(100, p.rating+dA); p.games++; p.lastDelta=dA;
     if (result==='soviet') p.wins++; else if (result==='german') p.losses++; else p.draws++;
-    // 소련
+    // 소련 진영 (패널티 감소 없음)
     p.sovRating = Math.max(100, p.sovRating+sovDA); p.sovGames++; p.sovLastDelta=sovDA;
     if (result==='soviet') p.sovWins++; else if (result==='german') p.sovLosses++; else p.sovDraws++;
-    // 포지션
     p.pos[pos]++;
   });
 
-  gerPlayers.forEach(({p, pos}) => {
-    // 전체
+  // 독일팀: 전체 레이팅 변동에 티어 패널티 감소 적용
+  gerPlayers.forEach(({p, pos, key}) => {
+    const rank = getRank(data, key);
+    const reduction = getTierPenaltyReduction(p.rating, rank);
+    const dB = rawDB < 0 ? Math.min(0, rawDB + reduction) : rawDB;
     p.rating = Math.max(100, p.rating+dB); p.games++; p.lastDelta=dB;
     if (result==='german') p.wins++; else if (result==='soviet') p.losses++; else p.draws++;
-    // 독일
+    // 독일 진영 (패널티 감소 없음)
     p.gerRating = Math.max(100, p.gerRating+gerDB); p.gerGames++; p.gerLastDelta=gerDB;
     if (result==='german') p.gerWins++; else if (result==='soviet') p.gerLosses++; else p.gerDraws++;
-    // 포지션
     p.pos[pos]++;
   });
 
-  return { dA, dB };
+  return { dA: rawDA, dB: rawDB };
 }
 
 // ── 전체 재계산 ───────────────────────────────────────────────
