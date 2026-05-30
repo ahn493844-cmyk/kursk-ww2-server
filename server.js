@@ -1,8 +1,5 @@
-// KURSK Rating System — 실시간 동기화 서버
-// SSE(Server-Sent Events)로 연결된 모든 클라이언트에 즉시 푸시
-//
-// 배포: Railway / Render / fly.io 등 무료 클라우드
-// 로컬: npm install && node server.js
+// KURSK Rating System — 실시간 동기화 서버 v2
+// 진영별(소련/독일) 레이팅 + 포지션별 통계 지원
 
 const express = require('express');
 const cors    = require('cors');
@@ -11,263 +8,230 @@ const path    = require('path');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';  // Railway는 반드시 0.0.0.0 바인딩 필요
+const HOST = '0.0.0.0';
 const DATA_FILE = path.join(__dirname, 'kursk_data.json');
+const K = 32;
 
-// ── 미들웨어 ──────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
-// ── 데이터 영속성 ─────────────────────────────────────────
+// ── 데이터 ───────────────────────────────────────────────────
+function emptyData() {
+  return { players: {}, history: [], totalGames: 0, lastUpdated: Date.now() };
+}
 function readData() {
   try {
     if (!fs.existsSync(DATA_FILE)) return emptyData();
     return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
   } catch { return emptyData(); }
 }
-
 function writeData(d) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2));
 }
 
-function emptyData() {
-  return { players: {}, history: [], totalGames: 0, lastUpdated: Date.now() };
+// ── 플레이어 기본 구조 ────────────────────────────────────────
+function emptyPlayer(name) {
+  return {
+    name,
+    // 전체
+    rating: 1000, games: 0, wins: 0, losses: 0, draws: 0, lastDelta: 0,
+    // 소련
+    sovRating: 1000, sovGames: 0, sovWins: 0, sovLosses: 0, sovDraws: 0, sovLastDelta: 0,
+    // 독일
+    gerRating: 1000, gerGames: 0, gerWins: 0, gerLosses: 0, gerDraws: 0, gerLastDelta: 0,
+    // 포지션별 (소서/소중/소동/독서/독중/독동)
+    pos: { sw:0, sc:0, se:0, gw:0, gc:0, ge:0 }
+  };
 }
 
-// ── SSE 클라이언트 풀 ──────────────────────────────────────
-// 연결된 모든 앱에 변경사항을 즉시 브로드캐스트
-const clients = new Set();
+function getPlayer(data, name) {
+  const key = name.trim().toLowerCase();
+  if (!data.players[key]) data.players[key] = emptyPlayer(name.trim());
+  // 구버전 데이터 마이그레이션
+  const p = data.players[key];
+  if (!p.sovRating) { p.sovRating=1000; p.sovGames=0; p.sovWins=0; p.sovLosses=0; p.sovDraws=0; p.sovLastDelta=0; }
+  if (!p.gerRating) { p.gerRating=1000; p.gerGames=0; p.gerWins=0; p.gerLosses=0; p.gerDraws=0; p.gerLastDelta=0; }
+  if (!p.pos) p.pos = { sw:0, sc:0, se:0, gw:0, gc:0, ge:0 };
+  return p;
+}
 
+function exp(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
+
+// ── SSE ──────────────────────────────────────────────────────
+const clients = new Set();
 function broadcast(data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
-  clients.forEach(res => {
-    try { res.write(payload); } catch { clients.delete(res); }
-  });
+  clients.forEach(res => { try { res.write(payload); } catch { clients.delete(res); } });
 }
 
-// ── API 엔드포인트 ────────────────────────────────────────
+// ── 게임 계산 로직 ────────────────────────────────────────────
+function applyGame(data, soviet, german, result) {
+  const sovPlayers = [
+    { p: getPlayer(data, soviet.west),   pos: 'sw', side: 'sov' },
+    { p: getPlayer(data, soviet.center), pos: 'sc', side: 'sov' },
+    { p: getPlayer(data, soviet.east),   pos: 'se', side: 'sov' },
+  ];
+  const gerPlayers = [
+    { p: getPlayer(data, german.west),   pos: 'gw', side: 'ger' },
+    { p: getPlayer(data, german.center), pos: 'gc', side: 'ger' },
+    { p: getPlayer(data, german.east),   pos: 'ge', side: 'ger' },
+  ];
 
-// 연결 확인
-app.get('/ping', (req, res) => {
-  res.json({ ok: true, time: Date.now(), clients: clients.size });
+  // 전체 레이팅 기준 Elo
+  const avgA = sovPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
+  const avgB = gerPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
+  const expA = exp(avgA, avgB);
+  const sA   = result==='soviet'?1:result==='german'?0:0.5;
+  const dA   = Math.round(K*(sA-expA));
+  const dB   = Math.round(K*((1-sA)-(1-expA)));
+
+  // 소련 진영 레이팅 기준 Elo
+  const sovAvgA = sovPlayers.reduce((s,x)=>s+x.p.sovRating,0)/3;
+  const gerAvgB = gerPlayers.reduce((s,x)=>s+x.p.gerRating,0)/3;
+  const sovExpA = exp(sovAvgA, gerAvgB);
+  const sovDA   = Math.round(K*(sA-sovExpA));
+  const gerDB   = Math.round(K*((1-sA)-(1-sovExpA)));
+
+  sovPlayers.forEach(({p, pos}) => {
+    // 전체
+    p.rating = Math.max(100, p.rating+dA); p.games++; p.lastDelta=dA;
+    if (result==='soviet') p.wins++; else if (result==='german') p.losses++; else p.draws++;
+    // 소련
+    p.sovRating = Math.max(100, p.sovRating+sovDA); p.sovGames++; p.sovLastDelta=sovDA;
+    if (result==='soviet') p.sovWins++; else if (result==='german') p.sovLosses++; else p.sovDraws++;
+    // 포지션
+    p.pos[pos]++;
+  });
+
+  gerPlayers.forEach(({p, pos}) => {
+    // 전체
+    p.rating = Math.max(100, p.rating+dB); p.games++; p.lastDelta=dB;
+    if (result==='german') p.wins++; else if (result==='soviet') p.losses++; else p.draws++;
+    // 독일
+    p.gerRating = Math.max(100, p.gerRating+gerDB); p.gerGames++; p.gerLastDelta=gerDB;
+    if (result==='german') p.gerWins++; else if (result==='soviet') p.gerLosses++; else p.gerDraws++;
+    // 포지션
+    p.pos[pos]++;
+  });
+
+  return { dA, dB };
+}
+
+// ── 전체 재계산 ───────────────────────────────────────────────
+function recalcFromHistory(history) {
+  const data = { players: {} };
+  for (const h of [...history].reverse()) {
+    applyGame(data, h.soviet, h.german, h.result);
+  }
+  return data.players;
+}
+
+// ── API ──────────────────────────────────────────────────────
+app.get('/ping', (req, res) => res.json({ ok:true, time:Date.now(), clients:clients.size }));
+app.get('/data', (req, res) => res.json(readData()));
+
+// 기존 데이터 전체 재계산 (구버전 → 신버전 마이그레이션)
+app.post('/migrate', (req, res) => {
+  const data = readData();
+  data.players = recalcFromHistory(data.history);
+  data.lastUpdated = Date.now();
+  writeData(data);
+  broadcast({ type:'update', data });
+  res.json({ ok:true, players: Object.keys(data.players).length });
 });
 
-// 전체 데이터 조회
-app.get('/data', (req, res) => {
-  res.json(readData());
-});
-
-// 게임 결과 등록 — 서버에서 Elo 계산 후 전체 브로드캐스트
 app.post('/game', (req, res) => {
   const { soviet, german, result } = req.body;
-  // soviet: { west, center, east }
-  // german: { west, center, east }
-  // result: 'soviet' | 'german' | 'draw'
-
-  if (!soviet || !german || !result) {
-    return res.status(400).json({ error: '필드 누락' });
-  }
+  if (!soviet||!german||!result) return res.status(400).json({ error:'필드 누락' });
 
   const data = readData();
+  const { dA, dB } = applyGame(data, soviet, german, result);
 
-  function getPlayer(name) {
-    const key = name.trim().toLowerCase();
-    if (!data.players[key]) {
-      data.players[key] = {
-        name: name.trim(), rating: 1000,
-        games: 0, wins: 0, losses: 0, draws: 0, lastDelta: 0
-      };
-    }
-    return data.players[key];
-  }
-
-  function expectedScore(rA, rB) {
-    return 1 / (1 + Math.pow(10, (rB - rA) / 400));
-  }
-
-  const K = 32;
-  const sovietPlayers = [soviet.west, soviet.center, soviet.east].map(getPlayer);
-  const germanPlayers = [german.west, german.center, german.east].map(getPlayer);
-
-  const avgA = sovietPlayers.reduce((s, p) => s + p.rating, 0) / 3;
-  const avgB = germanPlayers.reduce((s, p) => s + p.rating, 0) / 3;
-  const expA = expectedScore(avgA, avgB);
-  const sA   = result === 'soviet' ? 1 : result === 'german' ? 0 : 0.5;
-
-  const dA = Math.round(K * (sA - expA));
-  const dB = Math.round(K * ((1 - sA) - (1 - expA)));
-
-  sovietPlayers.forEach(p => {
-    p.rating = Math.max(100, p.rating + dA);
-    p.games++; p.lastDelta = dA;
-    if (result === 'soviet') p.wins++;
-    else if (result === 'german') p.losses++;
-    else p.draws++;
-  });
-
-  germanPlayers.forEach(p => {
-    p.rating = Math.max(100, p.rating + dB);
-    p.games++; p.lastDelta = dB;
-    if (result === 'german') p.wins++;
-    else if (result === 'soviet') p.losses++;
-    else p.draws++;
-  });
-
-  data.totalGames = (data.totalGames || 0) + 1;
+  data.totalGames = (data.totalGames||0)+1;
   data.lastUpdated = Date.now();
-  data.history = [{
-    soviet, german, result, dA, dB, time: Date.now()
-  }, ...(data.history || [])].slice(0, 200);
+  data.history = [{ soviet, german, result, dA, dB, time:Date.now() }, ...(data.history||[])].slice(0,200);
 
   writeData(data);
-
-  // 모든 연결된 클라이언트에 즉시 브로드캐스트
-  broadcast({ type: 'update', data });
-
-  res.json({ ok: true, dA, dB });
+  broadcast({ type:'update', data });
+  res.json({ ok:true, dA, dB });
 });
 
-// 히스토리 항목 삭제 + 레이팅 재계산 + 브로드캐스트
 app.delete('/history/:idx', (req, res) => {
   const idx = parseInt(req.params.idx);
   const data = readData();
-
-  if (isNaN(idx) || idx < 0 || idx >= data.history.length) {
-    return res.status(400).json({ error: '잘못된 인덱스' });
-  }
+  if (isNaN(idx)||idx<0||idx>=data.history.length) return res.status(400).json({ error:'잘못된 인덱스' });
 
   data.history.splice(idx, 1);
-  data.totalGames = Math.max(0, (data.totalGames || 1) - 1);
-
-  // 레이팅 전체 재계산
+  data.totalGames = Math.max(0,(data.totalGames||1)-1);
   data.players = recalcFromHistory(data.history);
   data.lastUpdated = Date.now();
 
   writeData(data);
-  broadcast({ type: 'update', data });
-  res.json({ ok: true });
+  broadcast({ type:'update', data });
+  res.json({ ok:true });
 });
 
-// 플레이어 레이팅 직접 수정 + 브로드캐스트
 app.patch('/player/:key', (req, res) => {
-  const key  = req.params.key;
   const data = readData();
+  const p = data.players[req.params.key];
+  if (!p) return res.status(404).json({ error:'플레이어 없음' });
 
-  if (!data.players[key]) return res.status(404).json({ error: '플레이어 없음' });
-
-  const { rating, games, wins, losses, draws } = req.body;
-  if (rating !== undefined) data.players[key].rating = Math.max(100, parseInt(rating));
-  if (games   !== undefined) data.players[key].games   = parseInt(games);
-  if (wins    !== undefined) data.players[key].wins    = parseInt(wins);
-  if (losses  !== undefined) data.players[key].losses  = parseInt(losses);
-  if (draws   !== undefined) data.players[key].draws   = parseInt(draws);
-  data.players[key].lastDelta = 0;
+  const fields = ['rating','sovRating','gerRating','games','wins','losses','draws'];
+  fields.forEach(f => { if (req.body[f]!==undefined) p[f]=parseInt(req.body[f]); });
+  p.lastDelta=0; p.sovLastDelta=0; p.gerLastDelta=0;
   data.lastUpdated = Date.now();
 
   writeData(data);
-  broadcast({ type: 'update', data });
-  res.json({ ok: true });
+  broadcast({ type:'update', data });
+  res.json({ ok:true });
 });
 
-// 플레이어 삭제 + 브로드캐스트
 app.delete('/player/:key', (req, res) => {
-  const key  = req.params.key;
   const data = readData();
-
-  if (!data.players[key]) return res.status(404).json({ error: '플레이어 없음' });
-
-  delete data.players[key];
+  if (!data.players[req.params.key]) return res.status(404).json({ error:'플레이어 없음' });
+  delete data.players[req.params.key];
   data.lastUpdated = Date.now();
-
   writeData(data);
-  broadcast({ type: 'update', data });
-  res.json({ ok: true });
+  broadcast({ type:'update', data });
+  res.json({ ok:true });
 });
 
-// 플레이어 통계 초기화 + 브로드캐스트
 app.patch('/player/:key/reset-stats', (req, res) => {
-  const key  = req.params.key;
   const data = readData();
-
-  if (!data.players[key]) return res.status(404).json({ error: '플레이어 없음' });
-
-  const p = data.players[key];
-  p.games = 0; p.wins = 0; p.losses = 0; p.draws = 0; p.lastDelta = 0;
+  const p = data.players[req.params.key];
+  if (!p) return res.status(404).json({ error:'플레이어 없음' });
+  p.games=0;p.wins=0;p.losses=0;p.draws=0;p.lastDelta=0;
+  p.sovGames=0;p.sovWins=0;p.sovLosses=0;p.sovDraws=0;p.sovLastDelta=0;
+  p.gerGames=0;p.gerWins=0;p.gerLosses=0;p.gerDraws=0;p.gerLastDelta=0;
+  p.pos={sw:0,sc:0,se:0,gw:0,gc:0,ge:0};
   data.lastUpdated = Date.now();
-
   writeData(data);
-  broadcast({ type: 'update', data });
-  res.json({ ok: true });
+  broadcast({ type:'update', data });
+  res.json({ ok:true });
 });
 
-// SSE — 실시간 푸시 구독 엔드포인트
-// 클라이언트가 연결되면 즉시 최신 데이터를 보내고, 이후 변경마다 자동 전송
 app.get('/events', (req, res) => {
-  res.setHeader('Content-Type',  'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // nginx 버퍼링 방지
-
-  // 연결 즉시 현재 데이터 전송
-  res.write(`data: ${JSON.stringify({ type: 'init', data: readData() })}\n\n`);
-
-  // 클라이언트 풀에 등록
+  res.setHeader('Content-Type','text/event-stream');
+  res.setHeader('Cache-Control','no-cache');
+  res.setHeader('Connection','keep-alive');
+  res.setHeader('X-Accel-Buffering','no');
+  res.write(`data: ${JSON.stringify({ type:'init', data:readData() })}\n\n`);
   clients.add(res);
-  console.log(`[SSE] 클라이언트 연결 (총 ${clients.size}명)`);
-
-  // 30초마다 heartbeat (연결 유지)
-  const heartbeat = setInterval(() => {
-    try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
-  }, 30000);
-
-  // 연결 종료 처리
-  req.on('close', () => {
-    clients.delete(res);
-    clearInterval(heartbeat);
-    console.log(`[SSE] 클라이언트 종료 (총 ${clients.size}명)`);
-  });
+  console.log(`[SSE] 연결 (총 ${clients.size}명)`);
+  const hb = setInterval(()=>{ try{res.write(': heartbeat\n\n');}catch{clearInterval(hb);} },30000);
+  req.on('close',()=>{ clients.delete(res); clearInterval(hb); console.log(`[SSE] 종료 (총 ${clients.size}명)`); });
 });
 
-// ── 레이팅 전체 재계산 ────────────────────────────────────
-function recalcFromHistory(history) {
-  const players = {};
-  const K = 32;
-
-  function getP(name) {
-    const key = name.trim().toLowerCase();
-    if (!players[key]) {
-      players[key] = { name: name.trim(), rating: 1000, games: 0, wins: 0, losses: 0, draws: 0, lastDelta: 0 };
-    }
-    return players[key];
-  }
-
-  function exp(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
-
-  const ordered = [...history].reverse(); // 오래된 순
-  for (const h of ordered) {
-    const sov = [h.soviet.west, h.soviet.center, h.soviet.east].map(getP);
-    const ger = [h.german.west, h.german.center, h.german.east].map(getP);
-    const avgA = sov.reduce((s, p) => s + p.rating, 0) / 3;
-    const avgB = ger.reduce((s, p) => s + p.rating, 0) / 3;
-    const expA = exp(avgA, avgB);
-    const sA   = h.result === 'soviet' ? 1 : h.result === 'german' ? 0 : 0.5;
-    const dA   = Math.round(K * (sA - expA));
-    const dB   = Math.round(K * ((1 - sA) - (1 - expA)));
-
-    sov.forEach(p => {
-      p.rating = Math.max(100, p.rating + dA); p.games++; p.lastDelta = dA;
-      if (h.result === 'soviet') p.wins++; else if (h.result === 'german') p.losses++; else p.draws++;
-    });
-    ger.forEach(p => {
-      p.rating = Math.max(100, p.rating + dB); p.games++; p.lastDelta = dB;
-      if (h.result === 'german') p.wins++; else if (h.result === 'soviet') p.losses++; else p.draws++;
-    });
-  }
-  return players;
-}
-
-// ── 서버 시작 ─────────────────────────────────────────────
 app.listen(PORT, HOST, () => {
-  console.log(`✅ KURSK 서버 실행 중: http://${HOST}:${PORT}`);
-  console.log(`   실시간 SSE 엔드포인트: http://${HOST}:${PORT}/events`);
+  console.log(`✅ KURSK 서버 v2 실행 중: http://${HOST}:${PORT}`);
+  // 시작 시 자동 마이그레이션 (구버전 데이터 → 진영별 레이팅)
+  const data = readData();
+  const needsMigration = Object.values(data.players).some(p => !p.sovRating || !p.pos);
+  if (needsMigration && data.history.length > 0) {
+    console.log('⚙️  구버전 데이터 감지 — 자동 마이그레이션 실행...');
+    data.players = recalcFromHistory(data.history);
+    data.lastUpdated = Date.now();
+    writeData(data);
+    console.log(`✅ 마이그레이션 완료 — ${Object.keys(data.players).length}명`);
+  }
 });
