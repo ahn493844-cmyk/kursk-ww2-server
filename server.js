@@ -192,6 +192,23 @@ app.post('/game', (req, res) => {
   res.json({ ok:true, dA, dB });
 });
 
+app.patch('/history/:idx', (req, res) => {
+  const idx = parseInt(req.params.idx);
+  const { result } = req.body;
+  if (!['soviet','german','draw'].includes(result)) return res.status(400).json({ error:'잘못된 결과값' });
+
+  const data = readData();
+  if (!data.history[idx]) return res.status(404).json({ error:'전적 없음' });
+
+  data.history[idx].result = result;
+  // 전체 재계산
+  data.players = recalcFromHistory(data.history);
+  data.lastUpdated = Date.now();
+  writeData(data);
+  broadcast({ type:'update', data });
+  res.json({ ok:true });
+});
+
 app.delete('/history/:idx', (req, res) => {
   const idx = parseInt(req.params.idx);
   const data = readData();
