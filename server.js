@@ -37,11 +37,11 @@ function emptyPlayer(name) {
   return {
     name,
     // 전체
-    rating: 1200, games: 0, wins: 0, losses: 0, draws: 0, lastDelta: 0,
+    rating: 1300, games: 0, wins: 0, losses: 0, draws: 0, lastDelta: 0,
     // 소련
-    sovRating: 1200, sovGames: 0, sovWins: 0, sovLosses: 0, sovDraws: 0, sovLastDelta: 0,
+    sovRating: 1300, sovGames: 0, sovWins: 0, sovLosses: 0, sovDraws: 0, sovLastDelta: 0,
     // 독일
-    gerRating: 1200, gerGames: 0, gerWins: 0, gerLosses: 0, gerDraws: 0, gerLastDelta: 0,
+    gerRating: 1300, gerGames: 0, gerWins: 0, gerLosses: 0, gerDraws: 0, gerLastDelta: 0,
     // 포지션별 (소서/소중/소동/독서/독중/독동)
     pos: { sw:0, sc:0, se:0, gw:0, gc:0, ge:0 }
   };
