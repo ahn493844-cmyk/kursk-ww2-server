@@ -9,7 +9,9 @@ const path    = require('path');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
-const DATA_FILE = path.join(__dirname, 'kursk_data.json');
+const DATA_FILE = process.env.DATA_PATH
+  ? path.join(process.env.DATA_PATH, 'kursk_data.json')
+  : path.join(__dirname, 'kursk_data.json');
 const K_OVERALL = 16;  // 전체 레이팅 K값 (느리게 변동)
 const K_FACTION = 32;  // 소련/독일 진영 레이팅 K값
 
