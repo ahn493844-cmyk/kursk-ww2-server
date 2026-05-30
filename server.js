@@ -134,7 +134,6 @@ function applyGame(data, soviet, german, result) {
     if (result==='german') p.gerWins++; else if (result==='soviet') p.gerLosses++; else p.gerDraws++;
     p.pos[pos]++;
   });
-  });
 
   return { dA: rawDA, dB: rawDB };
 }
