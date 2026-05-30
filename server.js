@@ -99,46 +99,41 @@ function applyGame(data, soviet, german, result) {
     { p: getPlayer(data, german.east),   pos: 'ge', key: german.east.trim().toLowerCase() },
   ];
 
-  // 전체 레이팅 기준 Elo (K=16)
-  const avgA = sovPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
-  const avgB = gerPlayers.reduce((s,x)=>s+x.p.rating,0)/3;
-  const expA = exp(avgA, avgB);
-  const sA   = result==='soviet'?1:result==='german'?0:0.5;
-  const rawDA = Math.round(K_OVERALL*(sA-expA));
-  const rawDB = Math.round(K_OVERALL*((1-sA)-(1-expA)));
-
-  // 소련/독일 진영 레이팅 기준 Elo (K=32, 패널티 감소 없음)
+  // 소련팀 소련레이팅 평균 vs 독일팀 독일레이팅 평균 — 모든 레이팅 계산의 기준
   const sovAvgA = sovPlayers.reduce((s,x)=>s+x.p.sovRating,0)/3;
   const gerAvgB = gerPlayers.reduce((s,x)=>s+x.p.gerRating,0)/3;
-  const sovExpA = exp(sovAvgA, gerAvgB);
-  const sovDA   = Math.round(K_FACTION*(sA-sovExpA));
-  const gerDB   = Math.round(K_FACTION*((1-sA)-(1-sovExpA)));
+  const expA = exp(sovAvgA, gerAvgB);
+  const sA   = result==='soviet'?1:result==='german'?0:0.5;
 
-  // 소련팀: 전체 레이팅 변동에 티어 패널티 감소 적용
+  // 전체/소련/독일 모두 동일한 예상승률 기반으로 계산 (K=32)
+  const rawDA  = Math.round(K_OVERALL*(sA-expA));
+  const rawDB  = Math.round(K_OVERALL*((1-sA)-(1-expA)));
+  const sovDA  = Math.round(K_FACTION*(sA-expA));
+  const gerDB  = Math.round(K_FACTION*((1-sA)-(1-expA)));
+
+  // 소련팀
   sovPlayers.forEach(({p, pos, key}) => {
-    // 전체 레이팅 — 패배 시만 감소량 줄임
     const rank = getRank(data, key);
     const reduction = getTierPenaltyReduction(p.rating, rank);
     const dA = rawDA < 0 ? Math.min(0, rawDA + reduction) : rawDA;
     p.rating = Math.max(100, p.rating+dA); p.games++; p.lastDelta=dA;
     if (result==='soviet') p.wins++; else if (result==='german') p.losses++; else p.draws++;
-    // 소련 진영 (패널티 감소 없음)
     p.sovRating = Math.max(100, p.sovRating+sovDA); p.sovGames++; p.sovLastDelta=sovDA;
     if (result==='soviet') p.sovWins++; else if (result==='german') p.sovLosses++; else p.sovDraws++;
     p.pos[pos]++;
   });
 
-  // 독일팀: 전체 레이팅 변동에 티어 패널티 감소 적용
+  // 독일팀
   gerPlayers.forEach(({p, pos, key}) => {
     const rank = getRank(data, key);
     const reduction = getTierPenaltyReduction(p.rating, rank);
     const dB = rawDB < 0 ? Math.min(0, rawDB + reduction) : rawDB;
     p.rating = Math.max(100, p.rating+dB); p.games++; p.lastDelta=dB;
     if (result==='german') p.wins++; else if (result==='soviet') p.losses++; else p.draws++;
-    // 독일 진영 (패널티 감소 없음)
     p.gerRating = Math.max(100, p.gerRating+gerDB); p.gerGames++; p.gerLastDelta=gerDB;
     if (result==='german') p.gerWins++; else if (result==='soviet') p.gerLosses++; else p.gerDraws++;
     p.pos[pos]++;
+  });
   });
 
   return { dA: rawDA, dB: rawDB };
